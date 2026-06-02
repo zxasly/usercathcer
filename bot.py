@@ -559,26 +559,53 @@ TG_SESSION = "checker" # имя файла сессии
 
 _telethon_client = None
 _telethon_flood_until: float = 0.0  # время до которого Telethon в бане
+_telethon_loop = None  # отдельный event loop для Telethon
+_telethon_thread = None
+
+
+def _run_telethon_loop(loop):
+    """Запускает отдельный event loop для Telethon в фоновом потоке."""
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
 
 
 async def get_telethon():
-    """Возвращает запущенный Telethon клиент."""
-    global _telethon_client
-    if _telethon_client is not None and _telethon_client.is_connected():
-        return _telethon_client
+    """Возвращает запущенный Telethon клиент в отдельном loop."""
+    global _telethon_client, _telethon_loop, _telethon_thread
+    if _telethon_client is not None:
+        try:
+            if _telethon_client.is_connected():
+                return _telethon_client
+        except Exception:
+            pass
     if not TG_API_ID or not TG_API_HASH:
         return None
     try:
+        import threading
         from telethon import TelegramClient
-        client = TelegramClient(TG_SESSION, TG_API_ID, TG_API_HASH)
-        # Авторизуемся как бот
-        await client.start(bot_token=BOT_TOKEN)
+
+        # Создаём отдельный event loop для Telethon
+        if _telethon_loop is None or _telethon_loop.is_closed():
+            _telethon_loop = asyncio.new_event_loop()
+            _telethon_thread = threading.Thread(
+                target=_run_telethon_loop,
+                args=(_telethon_loop,),
+                daemon=True,
+            )
+            _telethon_thread.start()
+
+        # Запускаем клиент в том loop
+        client = TelegramClient(TG_SESSION, TG_API_ID, TG_API_HASH, loop=_telethon_loop)
+        future = asyncio.run_coroutine_threadsafe(
+            client.start(bot_token=BOT_TOKEN),
+            _telethon_loop,
+        )
+        future.result(timeout=30)
         _telethon_client = client
-        logger.info("✅ Telethon клиент запущен — быстрый поиск активен")
+        logger.info("✅ Telethon запущен в отдельном потоке — быстрый поиск активен")
         return client
     except Exception as e:
         logger.warning(f"Telethon не запустился: {e}")
-        logger.warning("Используется getChat fallback (медленнее)")
         return None
 
 
@@ -601,29 +628,40 @@ async def is_username_free(bot: Bot, username: str) -> bool | None:
     if u in _username_cache:
         return _username_cache[u]
 
-    # --- Telethon (быстро) ---
+    # --- Telethon (быстро, без FloodWait) ---
     tele = await get_telethon()
-    if tele:
+    if tele and _telethon_loop and not _telethon_loop.is_closed():
         try:
             from telethon.tl.functions.contacts import ResolveUsernameRequest
             from telethon.errors import UsernameNotOccupiedError, UsernameInvalidError, FloodWaitError
+
+            async def _resolve():
+                return await tele(ResolveUsernameRequest(u))
+
+            future = asyncio.run_coroutine_threadsafe(_resolve(), _telethon_loop)
             try:
-                result = await tele(ResolveUsernameRequest(u))
+                future.result(timeout=8)
                 # Нашли — занят
                 _username_cache[u] = False
                 return False
-            except (UsernameNotOccupiedError, UsernameInvalidError):
-                _username_cache[u] = True
-                return True
-            except FloodWaitError as e:
-                logger.warning(f"Telethon FloodWait {e.seconds}с")
-                await asyncio.sleep(min(e.seconds, 30))
-                return None
-            except Exception as e:
-                logger.debug(f"Telethon error @{u}: {e}")
+            except Exception as inner_e:
+                inner_msg = str(inner_e).lower()
+                if "usernamenotoccupied" in inner_msg or "username not occupied" in inner_msg or "invalid" in inner_msg:
+                    _username_cache[u] = True
+                    return True
+                if "flood" in inner_msg:
+                    import re as _re2
+                    m2 = _re2.search(r"(\d+)", inner_msg)
+                    wait_s = int(m2.group(1)) if m2 else 30
+                    logger.warning(f"Telethon FloodWait {wait_s}с")
+                    await asyncio.sleep(min(wait_s, 30))
+                    return None
+                logger.debug(f"Telethon resolve error @{u}: {inner_e}")
                 # Падаем на getChat
         except ImportError:
             pass
+        except Exception as e:
+            logger.debug(f"Telethon outer error @{u}: {e}")
 
     # --- getChat fallback с rate limiting ---
     async with _getchat_lock:
