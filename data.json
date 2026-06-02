@@ -1,0 +1,17 @@
+{
+  "premium": {
+    "1421793035": null
+  },
+  "banned": [],
+  "traps": {},
+  "purchase_requests": {},
+  "request_cooldown": {},
+  "known_users": {
+    "1421793035": {
+      "username": "@vuxevbb",
+      "display": "hasly",
+      "first_seen": "01.06.2026 18:51"
+    }
+  },
+  "required_channels": []
+}
