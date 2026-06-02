@@ -705,6 +705,8 @@ def result_text(username: str, length: int, user_id: int) -> str:
 # ---------------------------------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user:
+        return
     user = update.effective_user
     user_id = user.id
     if is_banned(user_id):
@@ -748,6 +750,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if not query or not query.from_user:
+        return
     await query.answer()
 
     user_id = query.from_user.id
@@ -1064,6 +1068,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user or not update.message:
+        return
     user_id = update.effective_user.id
 
     if is_banned(user_id):
