@@ -798,12 +798,15 @@ def search_keyboard() -> InlineKeyboardMarkup:    return InlineKeyboardMarkup([
         ],
         [InlineKeyboardButton("◀️ Назад", callback_data="back")],
     ])
+
+
+def digits_keyboard(length: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✏️ Без цифр", callback_data=f"search_{length}_nodigits"),
             InlineKeyboardButton("🔢 С цифрами", callback_data=f"search_{length}_digits"),
         ],
-        [InlineKeyboardButton("◀️ Назад", callback_data="back")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="search_menu")],
     ])
 
 
