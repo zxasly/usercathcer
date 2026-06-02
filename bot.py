@@ -446,7 +446,7 @@ def estimate_price(username: str) -> dict:
     base = {4: 5000, 5: 500, 6: 50, 7: 10, 8: 5}.get(length, 3)
 
     multiplier = 1.0
-к
+
     # Только буквы — дороже
     if u.isalpha():
         multiplier *= 2.5
