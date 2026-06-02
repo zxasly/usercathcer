@@ -77,7 +77,6 @@ REFERRAL_REWARDS = [
     (10, 7),   # 10 рефералов → 7 дней
     (20, 30),  # 20 рефералов → 30 дней
 ]
-
 LETTERS = string.ascii_lowercase
 CHARS_WITH_DIGITS = string.ascii_lowercase + string.digits
 CHARS_NO_DIGITS = string.ascii_lowercase
@@ -1146,8 +1145,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Строка прогресса наград
         reward_lines = []
         for needed, days in REFERRAL_REWARDS:
-            done = "✅" if ref_count >= needed else "⬜"
-            reward_lines.append(f"{done} {needed} реф. → {days} дн.")
+            done = "[+]" if ref_count >= needed else "[ ]"
+            reward_lines.append(f"{done} {needed} реф. -> {days} дн.")
 
         next_r = get_next_reward(ref_count)
         can_claim = get_current_reward(ref_count) is not None
@@ -1192,8 +1191,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         notif_on = ref_notifications.get(user_id, True)
         reward_lines = []
         for needed, days in REFERRAL_REWARDS:
-            done = "✅" if ref_count >= needed else "⬜"
-            reward_lines.append(f"{done} {needed} реф. → {days} дн.")
+            done = "[+]" if ref_count >= needed else "[ ]"
+            reward_lines.append(f"{done} {needed} реф. -> {days} дн.")
         next_r = get_next_reward(ref_count)
         can_claim = get_current_reward(ref_count) is not None
         text = (
@@ -1342,10 +1341,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "💎 <b>Premium-подписка</b>\n"
             "─────────────────────\n\n"
-            "⭐ 1 день — 49⭐ / 49₽\n"
-            "⭐ 7 дней — 99⭐ / 99₽\n"
-            "⭐ 30 дней — 249⭐ / 249₽\n"
-            "⭐ Навсегда — 499⭐ / 499₽\n\n"
+            "⭐ 1 день — 25⭐ / 49₽\n"
+            "⭐ 7 дней — 50⭐ / 99₽\n"
+            "⭐ 30 дней — 125⭐ / 249₽\n"
+            "⭐ Навсегда — 250⭐ / 499₽\n\n"
             "Возможности Premium:\n"
             "• 🔍 Поиск 5-буквенных ников\n"
             "• 🪤 Ловушка на ник\n"
@@ -1545,10 +1544,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "💎 <b>Premium-подписка</b>\n"
             "─────────────────────\n\n"
-            "⭐ 1 день — 49⭐ / 49₽\n"
-            "⭐ 7 дней — 99⭐ / 99₽\n"
-            "⭐ 30 дней — 249⭐ / 249₽\n"
-            "⭐ Навсегда — 499⭐ / 499₽\n\n"
+            "⭐ 1 день — 25⭐ / 49₽\n"
+            "⭐ 7 дней — 50⭐ / 99₽\n"
+            "⭐ 30 дней — 125⭐ / 249₽\n"
+            "⭐ Навсегда — 250⭐ / 499₽\n\n"
             "Возможности Premium:\n"
             "• 🔍 Поиск 5-буквенных ников\n"
             "• 🪤 Ловушка на ник\n"
@@ -1594,8 +1593,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         notif_on = ref_notifications.get(user_id, True)
         reward_lines = []
         for needed, days in REFERRAL_REWARDS:
-            done = "✅" if ref_count >= needed else "⬜"
-            reward_lines.append(f"{done} {needed} реф. → {days} дн.")
+            done = "[+]" if ref_count >= needed else "[ ]"
+            reward_lines.append(f"{done} {needed} реф. -> {days} дн.")
         next_r = get_next_reward(ref_count)
         can_claim = get_current_reward(ref_count) is not None
         msg_text = (
