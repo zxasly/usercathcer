@@ -769,12 +769,20 @@ def reply_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton("🆘 Поддержка")],
         ],
         resize_keyboard=True,
-        persistent=True,
     )
 
 
-def search_keyboard() -> InlineKeyboardMarkup:
+def digits_keyboard(length: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✏️ Без цифр", callback_data=f"search_{length}_nodigits"),
+            InlineKeyboardButton("🔢 С цифрами", callback_data=f"search_{length}_digits"),
+        ],
+        [InlineKeyboardButton("◀️ Назад", callback_data="search_menu")],
+    ])
+
+
+def search_keyboard() -> InlineKeyboardMarkup:    return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("5 букв 💎 Premium", callback_data="len_5"),
             InlineKeyboardButton("6 букв", callback_data="len_6"),
