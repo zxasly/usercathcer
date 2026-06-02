@@ -7,7 +7,7 @@ import os
 from datetime import date, datetime, timedelta
 from collections import defaultdict
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -750,14 +750,27 @@ def use_attempt(user_id: int):
 def main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("� Поиск", callback_data="search_menu"),
+            InlineKeyboardButton("🔎 Поиск", callback_data="search_menu"),
             InlineKeyboardButton("💎 Премиум", callback_data="buy_premium"),
         ],
         [
-            InlineKeyboardButton("� Профиль", callback_data="profile"),
+            InlineKeyboardButton("👤 Профиль", callback_data="profile"),
             InlineKeyboardButton("👥 Рефералы", callback_data="referrals"),
         ],
     ])
+
+
+def reply_keyboard() -> ReplyKeyboardMarkup:
+    """Постоянная клавиатура под полем ввода."""
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("🔎 ПОИСК"), KeyboardButton("💎 Премиум")],
+            [KeyboardButton("👤 Профиль"), KeyboardButton("👥 Рефералы")],
+            [KeyboardButton("🆘 Поддержка")],
+        ],
+        resize_keyboard=True,
+        persistent=True,
+    )
 
 
 def search_keyboard() -> InlineKeyboardMarkup:
@@ -905,7 +918,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         main_text(user_id),
         parse_mode="Markdown",
-        reply_markup=main_keyboard(),
+        reply_markup=reply_keyboard(),
     )
 
 
@@ -1485,12 +1498,132 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Вы заблокированы в этом боте.")
         return
 
-    text = update.message.text.strip().lstrip("@")
+    text = update.message.text.strip() if update.message.text else ""
+
+    # Обработка кнопок постоянной клавиатуры
+    if text == "🔎 ПОИСК":
+        sf = search_filters[user_id]
+        l1 = sf["letter1"] or "—"
+        l2 = sf["letter2"] or "—"
+        filter_info = f"\n🔤 Фильтр: <b>{l1}{l2}</b>" if sf["letter1"] or sf["letter2"] else ""
+        await update.message.reply_text(
+            f"🔎 <b>Поиск юзернейма</b>\n\n"
+            f"Каждый найденный ник проходит двойную проверку:\n"
+            f"• Telegram — не занят\n"
+            f"• Fragment — не на продаже\n\n"
+            f"🎫 Осталось попыток: <b>{attempts_str(user_id)}</b>" + filter_info,
+            parse_mode="HTML",
+            reply_markup=search_keyboard(),
+        )
+        return
+
+    if text == "💎 Премиум":
+        # Симулируем нажатие кнопки buy_premium
+        if user_id in user_request_map:
+            req_id = user_request_map[user_id]
+            await update.message.reply_text(
+                f"💎 <b>Заявка на Premium</b>\n\n"
+                f"✅ Вы уже создали обращение, ожидайте ответа администратора.\n"
+                f"🆔 ID заявки: <code>{req_id}</code>",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Отменить заявку", callback_data="cancel_request")],
+                ]),
+            )
+            return
+        await update.message.reply_text(
+            "💎 <b>Premium-подписка</b>\n"
+            "─────────────────────\n\n"
+            "⭐ 1 день — 49⭐ / 49₽\n"
+            "⭐ 7 дней — 99⭐ / 99₽\n"
+            "⭐ 30 дней — 249⭐ / 249₽\n"
+            "⭐ Навсегда — 499⭐ / 499₽\n\n"
+            "Возможности Premium:\n"
+            "• 🔍 Поиск 5-буквенных ников\n"
+            "• 🪤 Ловушка на ник\n"
+            "• ♾️ Безлимитные попытки поиска\n\n"
+            "Нажми <b>Хочу купить</b> — администратор свяжется с тобой.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Хочу купить", callback_data="buy_premium_confirm")],
+            ]),
+        )
+        return
+
+    if text == "👤 Профиль":
+        ref_count = get_ref_count(user_id)
+        udata = known_users.get(user_id, {})
+        first_seen = udata.get("first_seen", "—")
+        next_r = get_next_reward(ref_count)
+        reward_line = (
+            f"🎁 До след. награды: ещё <b>{next_r[0] - ref_count}</b> реф."
+            if next_r else "🏆 Все награды получены!"
+        )
+        await update.message.reply_text(
+            f"👤 <b>Профиль</b>\n"
+            f"─────────────────────\n\n"
+            f"🆔 ID: <code>{user_id}</code>\n"
+            f"📅 В боте с: {first_seen}\n\n"
+            f"{'💎 Статус: Premium' if is_premium(user_id) else '👤 Статус: Обычный'}\n"
+            + (f"⏳ До конца: {premium_expires_str(user_id)}\n" if is_premium(user_id) else "")
+            + f"\n🎫 Попыток сегодня: <b>{attempts_str(user_id)}</b>\n"
+            f"👥 Рефералов: <b>{ref_count}</b>\n"
+            f"{reward_line}",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("👥 Мои рефералы", callback_data="referrals")],
+            ]),
+        )
+        return
+
+    if text == "👥 Рефералы":
+        bot_me = await context.bot.get_me()
+        ref_link = get_ref_link(user_id, bot_me.username)
+        ref_count = get_ref_count(user_id)
+        notif_on = ref_notifications.get(user_id, True)
+        reward_lines = []
+        for needed, days in REFERRAL_REWARDS:
+            done = "✅" if ref_count >= needed else "⬜"
+            reward_lines.append(f"{done} {needed} реф. → {days} дн.")
+        next_r = get_next_reward(ref_count)
+        can_claim = get_current_reward(ref_count) is not None
+        msg_text = (
+            f"👥 <b>Реферальная программа</b>\n"
+            f"─────────────────────\n\n"
+            f"🔗 Ваша ссылка:\n<code>{ref_link}</code>\n\n"
+            f"👤 Приглашено: <b>{ref_count}</b> чел.\n\n"
+            f"🎁 <b>Награды:</b>\n"
+            + "\n".join(reward_lines)
+            + f"\n\n"
+            + (f"➡️ Ещё <b>{next_r[0] - ref_count}</b> чел. до след. награды" if next_r else "🏆 Все награды получены!")
+            + f"\n\n🔔 Уведомления: {'✅ вкл' if notif_on else '❌ выкл'}"
+        )
+        buttons = []
+        if can_claim:
+            buttons.append([InlineKeyboardButton("🎁 Получить Premium", callback_data="ref_claim")])
+        buttons.append([InlineKeyboardButton(
+            "🔔 Выкл. уведомления" if notif_on else "🔔 Вкл. уведомления",
+            callback_data="ref_notif_toggle"
+        )])
+        await update.message.reply_text(
+            msg_text, parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            disable_web_page_preview=True,
+        )
+        return
+
+    if text == "🆘 Поддержка":
+        await update.message.reply_text(
+            "🆘 <b>Поддержка</b>\n\n"
+            "По всем вопросам обращайтесь к администратору.",
+            parse_mode="HTML",
+        )
+        return
 
     # --- Ожидаем ввод юзернейма для проверки стоимости ---
     if context.user_data.get("awaiting_price"):
         context.user_data["awaiting_price"] = False
-        username = text.lower()
+        username = text.lstrip("@").lower()
 
         if not username.isalnum() or len(username) < 4:
             await update.message.reply_text(
@@ -1584,7 +1717,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         main_text(user_id),
         parse_mode="Markdown",
-        reply_markup=main_keyboard(),
+        reply_markup=reply_keyboard(),
     )
 
 
