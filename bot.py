@@ -387,7 +387,7 @@ _words_cache: list[str] = []
 
 
 def load_words() -> list[str]:
-    """Загружает слова из words.txt."""
+    """Загружает слова из words.txt — все длины."""
     global _words_cache
     if _words_cache:
         return _words_cache
@@ -400,7 +400,7 @@ def load_words() -> list[str]:
             words = [
                 w.strip().lower()
                 for w in f.read().splitlines()
-                if w.strip().isalpha() and 4 <= len(w.strip()) <= 8
+                if w.strip().isalpha() and 3 <= len(w.strip()) <= 10
             ]
         _words_cache = words
         logger.info(f"Загружено {len(words)} слов из словаря")
@@ -412,20 +412,16 @@ def load_words() -> list[str]:
 
 def mutate_word_leet(word: str, length: int) -> list[str]:
     """
-    Генерирует варианты слова нужной длины:
-    1. Обрезает/дополняет до нужной длины
-    2. Leet-замены букв на цифры
-    3. Перестановки символов
+    Генерирует варианты слова нужной длины.
+    Обрезает/дополняет до нужной длины, делает leet-замены и перестановки.
     """
     word = word.lower()
     candidates = set()
 
     # Обрезаем или дополняем до нужной длины
     if len(word) > length:
-        # Берём начало слова
         base = word[:length]
     elif len(word) < length:
-        # Дополняем случайными буквами
         base = word + "".join(random.choices(LETTERS, k=length - len(word)))
     else:
         base = word
@@ -440,7 +436,7 @@ def mutate_word_leet(word: str, length: int) -> list[str]:
                 if len(variant) == length and variant[0].isalpha():
                     candidates.add(variant)
 
-    # Перестановка двух букв
+    # Перестановка двух соседних букв
     lst = list(base)
     for i in range(len(lst) - 1):
         new = lst[:]
@@ -453,20 +449,20 @@ def mutate_word_leet(word: str, length: int) -> list[str]:
 
 
 async def find_free_username_dict(bot: Bot, length: int) -> str | None:
-    """Ищет свободный ник используя слова из словаря."""
+    """Ищет свободный ник используя слова из words.txt (макс 7 букв)."""
     words = load_words()
     if not words:
         return None
 
-    # Фильтруем слова подходящей длины ±2
-    suitable = [w for w in words if abs(len(w) - length) <= 2]
+    # Только слова до 7 букв, подходящей длины ±2
+    suitable = [w for w in words if abs(len(w) - length) <= 2 and len(w) <= 7]
     if not suitable:
-        suitable = words
+        suitable = [w for w in words if len(w) <= 7]
 
     random.shuffle(suitable)
     seen = set()
 
-    for word in suitable[:300]:  # берём до 300 слов
+    for word in suitable[:300]:
         candidates = mutate_word_leet(word, length)
         for candidate in candidates:
             if candidate in seen:
@@ -476,7 +472,7 @@ async def find_free_username_dict(bot: Bot, length: int) -> str | None:
                 continue
             result = await is_username_free(bot, candidate)
             if result is True:
-                logger.info(f"[Словарь] НАЙДЕН: @{candidate} (из слова '{word}')")
+                logger.info(f"[Словарь] НАЙДЕН: @{candidate} (из '{word}')")
                 return candidate
             await asyncio.sleep(0.05)
 
@@ -833,7 +829,9 @@ async def find_free_username(bot: Bot, length: int, with_digits: bool, max_tries
             logger.info(f"[Поиск] попытка {i+1}, @{username} → {result}")
 
         if result is True:
-            logger.info(f"[Поиск] НАЙДЕН: @{username}")
+            udata = known_users.get(user_id, {})
+            uname = udata.get("username", str(user_id))
+            logger.info(f"[Поиск] НАЙДЕН: @{username} | для {uname} ({user_id})")
             return username
         await asyncio.sleep(0.05)
 
@@ -934,13 +932,15 @@ def digits_keyboard(length: int) -> InlineKeyboardMarkup:
     ])
 
 
-def result_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🔎 Поиск ещё", callback_data="search_menu"),
-            InlineKeyboardButton("◀️ Главное меню", callback_data="back"),
-        ],
+def result_keyboard(last_search: str = None) -> InlineKeyboardMarkup:
+    buttons = []
+    if last_search:
+        buttons.append([InlineKeyboardButton("🔄 Прокрутить ещё", callback_data=f"repeat_{last_search}")])
+    buttons.append([
+        InlineKeyboardButton("🔎 Поиск ещё", callback_data="search_menu"),
+        InlineKeyboardButton("◀️ Главное меню", callback_data="back"),
     ])
+    return InlineKeyboardMarkup(buttons)
 
 
 def trap_keyboard(is_premium: bool) -> InlineKeyboardMarkup:
@@ -1185,7 +1185,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(
                 result_text(username, length, user_id),
                 parse_mode="HTML",
-                reply_markup=result_keyboard(),
+                reply_markup=result_keyboard("dict"),
             )
         else:
             await query.edit_message_text(
@@ -1613,6 +1613,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
+    # --- Повтор поиска ---
+    if data.startswith("repeat_"):
+        # repeat_{length}_{digits|nodigits}  or  repeat_dict
+        repeat_data = data[len("repeat_"):]
+        if repeat_data == "dict":
+            data = "dict_search"
+        else:
+            data = f"search_{repeat_data}"
+        # падаем дальше на обработчики search_ / dict_search
+
     # --- Поиск ---
     if data.startswith("search_"):
         parts = data.split("_")
@@ -1626,9 +1636,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             remaining = get_remaining(user_id)
             if remaining <= 0:
                 await query.edit_message_text(
-                    "⛔ На сегодня попытки закончились.\nПриходи завтра!\n\n"
-                    "💎 Купи Premium для безлимитного поиска.",
-                    parse_mode="Markdown",
+                    "⛔ Попытки на сегодня закончились. Приходи завтра!\n\n"
+                    "💎 Купи Premium — попытки безлимитные.",
+                    parse_mode="HTML",
                     reply_markup=main_keyboard(),
                 )
                 return
@@ -1643,30 +1653,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             filter_label = f", начало: {l1 or ''}{l2 or ''}"
 
         await query.edit_message_text(
-            f"🔍 Ищу свободный {length}-значный юзернейм ({digits_label}{filter_label})...\n"
-            f"_(обычно занимает 5–15 секунд)_",
-            parse_mode="Markdown",
+            f"🔍 Ищу {length}-значный ник ({digits_label}{filter_label})...",
+            parse_mode="HTML",
         )
 
         bot: Bot = context.bot
         username = await find_free_username(bot, length, with_digits, letter1=l1, letter2=l2)
-        remaining_after = get_remaining(user_id)
+        last_search = f"{length}_{parts[2]}"
 
         if username:
             await query.edit_message_text(
                 result_text(username, length, user_id),
                 parse_mode="HTML",
-                reply_markup=result_keyboard(),
+                reply_markup=result_keyboard(last_search),
             )
         else:
             await query.edit_message_text(
-                "💎 *ПОИСК ЮЗЕРНЕЙМА*\n"
-                "─────────────────────\n\n"
-                "😔 Не удалось найти свободный ник.\n"
-                "Попробуй ещё раз!\n\n"
-                f"🎫 Осталось попыток сегодня: *{attempts_str(user_id)}*",
-                parse_mode="Markdown",
-                reply_markup=main_keyboard(),
+                "😔 Не нашёл свободный ник. Попробуй ещё раз!",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Попробовать снова", callback_data=f"search_{last_search}")],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="search_menu")],
+                ]),
             )
         return
 
@@ -1950,6 +1958,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("📣 Рассылка", callback_data="adm_broadcast"),
+            InlineKeyboardButton("🔄 Попытки", callback_data="adm_restore"),
         ],
         [
             InlineKeyboardButton("👥 Рефералы", callback_data="adm_refs"),
@@ -2264,6 +2273,30 @@ async def admin_button_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
+    # --- Восстановить попытки ---
+    if data == "adm_restore":
+        context.user_data["adm_action"] = "restore_attempts"
+        await query.edit_message_text(
+            "🔄 <b>Восстановить попытки</b>\n\n"
+            "Введите Telegram ID пользователя:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("♾️ Всем пользователям", callback_data="adm_restore_all")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="adm_back")],
+            ]),
+        )
+        return
+
+    if data == "adm_restore_all":
+        count = len(user_attempts)
+        user_attempts.clear()
+        await query.edit_message_text(
+            f"✅ Попытки сброшены для всех пользователей ({count} чел.)",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="adm_back")]]),
+        )
+        return
+
     # --- Рефералы (админ) ---
     if data == "adm_refs":
         top = sorted(referrals.items(), key=lambda x: len(x[1]), reverse=True)[:20]
@@ -2515,6 +2548,25 @@ async def admin_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         target_id = int(text)
     except ValueError:
         await update.message.reply_text("⚠️ Некорректный ID. Введите число.")
+        return
+
+    if action == "restore_attempts":
+        # Сбрасываем попытки конкретному пользователю
+        if target_id in user_attempts:
+            user_attempts[target_id] = {"date": None, "count": 0}
+        await update.message.reply_text(
+            f"✅ Попытки восстановлены для пользователя <code>{target_id}</code>",
+            parse_mode="HTML",
+            reply_markup=admin_keyboard(),
+        )
+        try:
+            await context.bot.send_message(
+                target_id,
+                "🎁 Ваши попытки поиска восстановлены администратором!\n"
+                f"Снова доступно {DAILY_LIMIT} попытки.",
+            )
+        except Exception:
+            pass
         return
 
     if action == "give_prem":
