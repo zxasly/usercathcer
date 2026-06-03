@@ -358,15 +358,129 @@ def generate_username(length: int, with_digits: bool, letter1: str = None, lette
     letter1/letter2 — фиксированные первые буквы если заданы."""
     chars = CHARS_WITH_DIGITS if with_digits else CHARS_NO_DIGITS
     result = []
-    # 1-я буква
     result.append(letter1 if letter1 else random.choice(LETTERS))
-    # 2-я буква (если задана и длина >= 2)
     if length >= 2:
         result.append(letter2 if letter2 else random.choice(chars))
-    # Остальные
     for _ in range(length - len(result)):
         result.append(random.choice(chars))
     return "".join(result)
+
+
+# ---------------------------------------------------------------------------
+# Словарный поиск
+# ---------------------------------------------------------------------------
+
+# Замены букв на цифры (leet speak)
+LEET_MAP = {
+    'a': ['4', '@'],
+    'e': ['3'],
+    'i': ['1', '!'],
+    'o': ['0'],
+    's': ['5', '$'],
+    't': ['7'],
+    'l': ['1'],
+    'b': ['8'],
+    'g': ['9'],
+}
+
+_words_cache: list[str] = []
+
+
+def load_words() -> list[str]:
+    """Загружает слова из words.txt."""
+    global _words_cache
+    if _words_cache:
+        return _words_cache
+    words_file = os.path.join(os.path.dirname(__file__), "words.txt")
+    if not os.path.exists(words_file):
+        logger.warning("words.txt не найден")
+        return []
+    try:
+        with open(words_file, encoding="utf-8") as f:
+            words = [
+                w.strip().lower()
+                for w in f.read().splitlines()
+                if w.strip().isalpha() and 4 <= len(w.strip()) <= 8
+            ]
+        _words_cache = words
+        logger.info(f"Загружено {len(words)} слов из словаря")
+        return words
+    except Exception as e:
+        logger.error(f"Ошибка загрузки words.txt: {e}")
+        return []
+
+
+def mutate_word_leet(word: str, length: int) -> list[str]:
+    """
+    Генерирует варианты слова нужной длины:
+    1. Обрезает/дополняет до нужной длины
+    2. Leet-замены букв на цифры
+    3. Перестановки символов
+    """
+    word = word.lower()
+    candidates = set()
+
+    # Обрезаем или дополняем до нужной длины
+    if len(word) > length:
+        # Берём начало слова
+        base = word[:length]
+    elif len(word) < length:
+        # Дополняем случайными буквами
+        base = word + "".join(random.choices(LETTERS, k=length - len(word)))
+    else:
+        base = word
+
+    candidates.add(base)
+
+    # Leet-замены
+    for i, ch in enumerate(base):
+        if ch in LEET_MAP:
+            for replacement in LEET_MAP[ch]:
+                variant = base[:i] + replacement + base[i+1:]
+                if len(variant) == length and variant[0].isalpha():
+                    candidates.add(variant)
+
+    # Перестановка двух букв
+    lst = list(base)
+    for i in range(len(lst) - 1):
+        new = lst[:]
+        new[i], new[i+1] = new[i+1], new[i]
+        variant = "".join(new)
+        if variant[0].isalpha():
+            candidates.add(variant)
+
+    return list(candidates)
+
+
+async def find_free_username_dict(bot: Bot, length: int) -> str | None:
+    """Ищет свободный ник используя слова из словаря."""
+    words = load_words()
+    if not words:
+        return None
+
+    # Фильтруем слова подходящей длины ±2
+    suitable = [w for w in words if abs(len(w) - length) <= 2]
+    if not suitable:
+        suitable = words
+
+    random.shuffle(suitable)
+    seen = set()
+
+    for word in suitable[:300]:  # берём до 300 слов
+        candidates = mutate_word_leet(word, length)
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if not candidate[0].isalpha():
+                continue
+            result = await is_username_free(bot, candidate)
+            if result is True:
+                logger.info(f"[Словарь] НАЙДЕН: @{candidate} (из слова '{word}')")
+                return candidate
+            await asyncio.sleep(0.05)
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -788,10 +902,14 @@ def digits_keyboard(length: int) -> InlineKeyboardMarkup:
     ])
 
 
-def search_keyboard() -> InlineKeyboardMarkup:    return InlineKeyboardMarkup([
+def search_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("5 букв 💎 Premium", callback_data="len_5"),
             InlineKeyboardButton("6 букв", callback_data="len_6"),
+        ],
+        [
+            InlineKeyboardButton("📖 По словарю", callback_data="dict_search"),
         ],
         [
             InlineKeyboardButton("💰 Проверка стоимости", callback_data="price_menu"),
@@ -1034,9 +1152,55 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # --- Поиск по словарю ---
+    if data == "dict_search":
+        # Только для Premium
+        if not is_premium(user_id):
+            await query.edit_message_text(
+                "💎 <b>Поиск по словарю — только для Premium</b>\n\n"
+                "Эта функция ищет красивые осмысленные ники из реальных слов.\n\n"
+                "Оформи подписку чтобы получить доступ.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💎 Купить Premium", callback_data="buy_premium")],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="search_menu")],
+                ]),
+            )
+            return
+
+        await query.edit_message_text(
+            "📖 <b>Ищу по словарю...</b>\n\n"
+            "Перебираю слова и ищу похожие свободные ники.\n"
+            "Если точное слово занято — заменяю буквы (e→3, i→1 и т.д.)\n\n"
+            "<i>Обычно занимает 10–30 секунд</i>",
+            parse_mode="HTML",
+        )
+
+        bot: Bot = context.bot
+        # Выбираем длину — 5 если Premium, иначе 6
+        length = 5 if is_premium(user_id) else 6
+        username = await find_free_username_dict(bot, length)
+
+        if username:
+            await query.edit_message_text(
+                result_text(username, length, user_id),
+                parse_mode="HTML",
+                reply_markup=result_keyboard(),
+            )
+        else:
+            await query.edit_message_text(
+                "😔 Не нашёл свободный ник по словарю.\n\n"
+                "Попробуй обычный поиск или зайди позже.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔎 Обычный поиск", callback_data="search_menu")],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="back")],
+                ]),
+            )
+        return
+
     # --- Фильтр букв ---
-    if data == "filter_menu":
-        sf = search_filters[user_id]
+    if data == "filter_menu":        sf = search_filters[user_id]
         l1 = sf["letter1"] or "не выбрана"
         l2 = sf["letter2"] or "не выбрана"
         await query.edit_message_text(
@@ -2507,6 +2671,7 @@ def main():
     # Запускаем фоновую проверку ловушек
     async def post_init(application: Application):
         await get_telethon()  # запускаем Telethon при старте
+        load_words()          # загружаем словарь
         asyncio.create_task(check_traps(application))
 
     app.post_init = post_init
