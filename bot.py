@@ -734,32 +734,50 @@ GETCHAT_INTERVAL = 1.2
 
 async def check_fragment_httpx(username: str) -> bool:
     """
-    Проверяет Fragment через httpx.
-    True = не на Fragment, False = на продаже.
+    Проверяет Fragment через несколько методов.
+    True = не на Fragment, False = на продаже/аукционе.
     """
     import httpx
     u = username.lower()
     if u in _fragment_cache:
         return _fragment_cache[u]
+
+    # Метод 1: Fragment search API
     try:
-        async with httpx.AsyncClient(timeout=3.0, follow_redirects=True) as client:
-            r = await client.get(
-                f"https://fragment.com/username/{u}",
-                headers={"User-Agent": "Mozilla/5.0"},
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            r = await client.post(
+                "https://fragment.com/api",
+                data={"query": u, "method": "searchUsernames"},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "application/json",
+                    "Origin": "https://fragment.com",
+                    "Referer": "https://fragment.com/",
+                },
             )
             if r.status_code == 200:
-                low = r.text.lower()
-                on_market = any(x in low for x in (
-                    "buy now", "place a bid", "auction", "collectible",
-                    "on sale", "for sale", "sold",
-                ))
-                _fragment_cache[u] = not on_market
-                return not on_market
-        _fragment_cache[u] = True
-        return True
+                try:
+                    data = r.json()
+                    results = data.get("results", [])
+                    for item in results:
+                        if item.get("username", "").lower() == u:
+                            logger.debug(f"Fragment API: @{u} найден — на маркете")
+                            _fragment_cache[u] = False
+                            return False
+                    _fragment_cache[u] = True
+                    return True
+                except Exception:
+                    pass
+            elif r.status_code in (403, 429):
+                logger.debug(f"Fragment API {r.status_code} для @{u} — пропускаем")
+                _fragment_cache[u] = True
+                return True
     except Exception as e:
-        logger.debug(f"Fragment check error @{u}: {e}")
-        return True  # не смогли проверить — не блокируем
+        logger.debug(f"Fragment API error @{u}: {e}")
+
+    # Если не смогли проверить — не блокируем
+    _fragment_cache[u] = True
+    return True
 
 
 async def is_username_free(bot: Bot, username: str) -> bool | None:
@@ -787,8 +805,40 @@ async def is_username_free(bot: Bot, username: str) -> bool | None:
 
             future = asyncio.run_coroutine_threadsafe(_resolve(), _telethon_loop)
             try:
-                future.result(timeout=8)
-                # Нашли — занят
+                result = future.result(timeout=8)
+                # Проверяем тип результата
+                # Fragment-ники возвращают пустой результат или chats/users без username
+                from telethon.tl.types import Channel, User
+                chats = getattr(result, 'chats', [])
+                users = getattr(result, 'users', [])
+
+                # Если ни чатов ни пользователей — свободен
+                if not chats and not users:
+                    frag_ok = await check_fragment_httpx(u)
+                    if not frag_ok:
+                        _username_cache[u] = False
+                        return False
+                    _username_cache[u] = True
+                    return True
+
+                # Проверяем есть ли реальный владелец
+                entity = (chats + users)[0] if (chats or users) else None
+                if entity:
+                    # У Fragment-ников username может совпадать но они "collectible"
+                    entity_username = getattr(entity, 'username', None)
+                    if entity_username and entity_username.lower() == u:
+                        # Занят реальным аккаунтом/каналом
+                        _username_cache[u] = False
+                        return False
+                    else:
+                        # Username не совпадает — возможно Fragment-ник
+                        frag_ok = await check_fragment_httpx(u)
+                        if not frag_ok:
+                            _username_cache[u] = False
+                            return False
+                        _username_cache[u] = True
+                        return True
+
                 _username_cache[u] = False
                 return False
             except Exception as inner_e:
