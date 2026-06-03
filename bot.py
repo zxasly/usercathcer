@@ -670,14 +670,23 @@ _fragment_cache: dict[str, bool] = {}
 # Telethon клиент для быстрой проверки ников (без FloodWait)
 # Вставь свои данные с my.telegram.org
 # ============================================================
-TG_API_ID = 34401324          # <-- вставь api_id (число)
-TG_API_HASH = "f2e55ac1fc53a5701645e2db510fef02"       # <-- вставь api_hash (строка)
-TG_SESSION = "checker" # имя файла сессии
+TG_API_ID = 34401324
+TG_API_HASH = "f2e55ac1fc53a5701645e2db510fef02"
+TG_SESSION = "checker"
+
+# Второй аккаунт — fallback при FloodWait первого
+# Вставь свои новые ключи после сброса на my.telegram.org
+TG_API_ID_2 = 28349559       # <-- вставь второй api_id
+TG_API_HASH_2 = "0540dfb3a529f1ad69071db6fd7c94bf"     # <-- вставь второй api_hash
+TG_SESSION_2 = "checker2"
 
 _telethon_client = None
-_telethon_flood_until: float = 0.0  # время до которого Telethon в бане
-_telethon_loop = None  # отдельный event loop для Telethon
+_telethon_client_2 = None
+_telethon_flood_until: float = 0.0
+_telethon_loop = None
+_telethon_loop_2 = None
 _telethon_thread = None
+_telethon_thread_2 = None
 
 
 def _run_telethon_loop(loop):
@@ -686,8 +695,26 @@ def _run_telethon_loop(loop):
     loop.run_forever()
 
 
+async def _start_telethon_client(api_id, api_hash, session, loop) -> object | None:
+    """Запускает Telethon клиент в указанном loop."""
+    try:
+        import threading
+        from telethon import TelegramClient
+        if loop is None or loop.is_closed():
+            loop = asyncio.new_event_loop()
+            t = threading.Thread(target=lambda: (asyncio.set_event_loop(loop), loop.run_forever()), daemon=True)
+            t.start()
+        client = TelegramClient(session, api_id, api_hash, loop=loop)
+        future = asyncio.run_coroutine_threadsafe(client.start(bot_token=BOT_TOKEN), loop)
+        future.result(timeout=30)
+        return client, loop
+    except Exception as e:
+        logger.warning(f"Telethon [{session}] не запустился: {e}")
+        return None, loop
+
+
 async def get_telethon():
-    """Возвращает запущенный Telethon клиент в отдельном loop."""
+    """Возвращает основной Telethon клиент."""
     global _telethon_client, _telethon_loop, _telethon_thread
     if _telethon_client is not None:
         try:
@@ -700,29 +727,49 @@ async def get_telethon():
     try:
         import threading
         from telethon import TelegramClient
-
-        # Создаём отдельный event loop для Telethon
         if _telethon_loop is None or _telethon_loop.is_closed():
             _telethon_loop = asyncio.new_event_loop()
             _telethon_thread = threading.Thread(
-                target=_run_telethon_loop,
-                args=(_telethon_loop,),
-                daemon=True,
-            )
+                target=_run_telethon_loop, args=(_telethon_loop,), daemon=True)
             _telethon_thread.start()
-
-        # Запускаем клиент в том loop
         client = TelegramClient(TG_SESSION, TG_API_ID, TG_API_HASH, loop=_telethon_loop)
-        future = asyncio.run_coroutine_threadsafe(
-            client.start(bot_token=BOT_TOKEN),
-            _telethon_loop,
-        )
+        future = asyncio.run_coroutine_threadsafe(client.start(bot_token=BOT_TOKEN), _telethon_loop)
         future.result(timeout=30)
         _telethon_client = client
-        logger.info("✅ Telethon запущен в отдельном потоке — быстрый поиск активен")
+        logger.info("✅ Telethon #1 запущен")
         return client
     except Exception as e:
-        logger.warning(f"Telethon не запустился: {e}")
+        logger.warning(f"Telethon #1 не запустился: {e}")
+        return None
+
+
+async def get_telethon_2():
+    """Возвращает резервный Telethon клиент."""
+    global _telethon_client_2, _telethon_loop_2, _telethon_thread_2
+    if _telethon_client_2 is not None:
+        try:
+            if _telethon_client_2.is_connected():
+                return _telethon_client_2
+        except Exception:
+            pass
+    if not TG_API_ID_2 or not TG_API_HASH_2:
+        return None
+    try:
+        import threading
+        from telethon import TelegramClient
+        if _telethon_loop_2 is None or _telethon_loop_2.is_closed():
+            _telethon_loop_2 = asyncio.new_event_loop()
+            _telethon_thread_2 = threading.Thread(
+                target=_run_telethon_loop, args=(_telethon_loop_2,), daemon=True)
+            _telethon_thread_2.start()
+        client = TelegramClient(TG_SESSION_2, TG_API_ID_2, TG_API_HASH_2, loop=_telethon_loop_2)
+        future = asyncio.run_coroutine_threadsafe(client.start(bot_token=BOT_TOKEN), _telethon_loop_2)
+        future.result(timeout=30)
+        _telethon_client_2 = client
+        logger.info("✅ Telethon #2 запущен")
+        return client
+    except Exception as e:
+        logger.warning(f"Telethon #2 не запустился: {e}")
         return None
 
 
@@ -734,7 +781,7 @@ GETCHAT_INTERVAL = 1.2
 
 async def check_fragment_httpx(username: str) -> bool:
     """
-    Проверяет Fragment через несколько методов.
+    Проверяет Fragment через t.me — там есть текст о продаже.
     True = не на Fragment, False = на продаже/аукционе.
     """
     import httpx
@@ -742,42 +789,32 @@ async def check_fragment_httpx(username: str) -> bool:
     if u in _fragment_cache:
         return _fragment_cache[u]
 
-    # Метод 1: Fragment search API
     try:
-        async with httpx.AsyncClient(timeout=4.0) as client:
-            r = await client.post(
-                "https://fragment.com/api",
-                data={"query": u, "method": "searchUsernames"},
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Accept": "application/json",
-                    "Origin": "https://fragment.com",
-                    "Referer": "https://fragment.com/",
-                },
+        async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
+            r = await client.get(
+                f"https://t.me/{u}",
+                headers={"User-Agent": "Mozilla/5.0"},
             )
             if r.status_code == 200:
-                try:
-                    data = r.json()
-                    results = data.get("results", [])
-                    for item in results:
-                        if item.get("username", "").lower() == u:
-                            logger.debug(f"Fragment API: @{u} найден — на маркете")
-                            _fragment_cache[u] = False
-                            return False
-                    _fragment_cache[u] = True
-                    return True
-                except Exception:
-                    pass
-            elif r.status_code in (403, 429):
-                logger.debug(f"Fragment API {r.status_code} для @{u} — пропускаем")
-                _fragment_cache[u] = True
-                return True
+                low = r.text.lower()
+                # Текст который появляется когда ник на Fragment
+                on_fragment = any(x in low for x in (
+                    "выставлена на продажу",
+                    "on sale",
+                    "for sale",
+                    "fragment.com",
+                    "подробнее",
+                    "buy this username",
+                ))
+                if on_fragment:
+                    logger.debug(f"t.me: @{u} на Fragment — пропускаем")
+                    _fragment_cache[u] = False
+                    return False
+            _fragment_cache[u] = True
+            return True
     except Exception as e:
-        logger.debug(f"Fragment API error @{u}: {e}")
-
-    # Если не смогли проверить — не блокируем
-    _fragment_cache[u] = True
-    return True
+        logger.debug(f"t.me fragment check error @{u}: {e}")
+        return True
 
 
 async def is_username_free(bot: Bot, username: str) -> bool | None:
@@ -855,7 +892,35 @@ async def is_username_free(bot: Bot, username: str) -> bool | None:
                     import re as _re2
                     m2 = _re2.search(r"(\d+)", inner_msg)
                     wait_s = int(m2.group(1)) if m2 else 30
-                    logger.warning(f"Telethon FloodWait {wait_s}с")
+                    logger.warning(f"Telethon #1 FloodWait {wait_s}с — пробую #2")
+                    # Пробуем второй аккаунт
+                    tele2 = await get_telethon_2()
+                    if tele2 and _telethon_loop_2 and not _telethon_loop_2.is_closed():
+                        async def _resolve2():
+                            return await tele2(ResolveUsernameRequest(u))
+                        future2 = asyncio.run_coroutine_threadsafe(_resolve2(), _telethon_loop_2)
+                        try:
+                            result2 = future2.result(timeout=8)
+                            chats2 = getattr(result2, 'chats', [])
+                            users2 = getattr(result2, 'users', [])
+                            if not chats2 and not users2:
+                                frag_ok = await check_fragment_httpx(u)
+                                _username_cache[u] = frag_ok
+                                return True if frag_ok else False
+                            entity2 = (chats2 + users2)[0]
+                            entity_uname2 = getattr(entity2, 'username', None)
+                            if entity_uname2 and entity_uname2.lower() == u:
+                                _username_cache[u] = False
+                                return False
+                            frag_ok = await check_fragment_httpx(u)
+                            _username_cache[u] = frag_ok
+                            return True if frag_ok else False
+                        except Exception as e2:
+                            e2_msg = str(e2).lower()
+                            if "usernamenotoccupied" in e2_msg or "invalid" in e2_msg:
+                                frag_ok = await check_fragment_httpx(u)
+                                _username_cache[u] = frag_ok
+                                return True if frag_ok else False
                     await asyncio.sleep(min(wait_s, 30))
                     return None
                 logger.debug(f"Telethon resolve error @{u}: {inner_e}")
@@ -2838,8 +2903,9 @@ def main():
 
     # Запускаем фоновую проверку ловушек
     async def post_init(application: Application):
-        await get_telethon()  # запускаем Telethon при старте
-        load_words()          # загружаем словарь
+        await get_telethon()    # запускаем Telethon #1
+        await get_telethon_2()  # запускаем Telethon #2 (если настроен)
+        load_words()            # загружаем словарь
         asyncio.create_task(check_traps(application))
 
     app.post_init = post_init
