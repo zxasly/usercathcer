@@ -243,8 +243,15 @@ def get_ref_count(user_id: int) -> int:
     return len(referrals.get(user_id, []))
 
 
+def _make_ref_code(user_id: int) -> str:
+    """Генерирует короткий уникальный код из user_id."""
+    import hashlib
+    return hashlib.md5(str(user_id).encode()).hexdigest()[:8].upper()
+
+
 def get_ref_link(user_id: int, bot_username: str) -> str:
-    return f"https://t.me/{bot_username}?start=ref{user_id}"
+    code = _make_ref_code(user_id)
+    return f"https://t.me/{bot_username}?start={code}"
 
 
 def get_next_reward(ref_count: int) -> tuple[int, int] | None:
@@ -330,15 +337,15 @@ async def check_subscriptions(bot: Bot, user_id: int) -> list[dict]:
 def subscription_wall_text(missing: list[dict]) -> str:
     lines = "\n".join(f"• <a href='{ch['link']}'>{ch['title']}</a>" for ch in missing)
     return (
-        "🔒 <b>Для использования бота необходимо подписаться:</b>\n\n"
+        "� Чтобы пользоваться ботом — подпишись на каналы:\n\n"
         f"{lines}\n\n"
-        "После подписки нажми кнопку ниже."
+        "Подписался? Нажми кнопку ниже 👇"
     )
 
 
 def subscription_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Я подписался", callback_data="check_sub")],
+        [InlineKeyboardButton("✅ Подписался", callback_data="check_sub")],
     ])
 
 
@@ -837,23 +844,22 @@ def trap_keyboard(is_premium: bool) -> InlineKeyboardMarkup:
 
 def main_text(user_id: int) -> str:
     att = attempts_str(user_id)
+    prem = "💎 Premium" if is_premium(user_id) else "� Обычный"
     return (
-        "💎 *ПОИСК ЮЗЕРНЕЙМА*\n"
-        "─────────────────────\n\n"
-        "✔️ Каждый найденный ник проходит двойную проверку:\n"
-        "• Telegram — не занят профилем, каналом или ботом\n"
-        "• Fragment — не выставлен на аукцион или продажу\n\n"
-        f"🎫 Осталось попыток сегодня: *{att}*\n\n"
-        "Выберите раздел 👥"
+        f"👋 Привет!\n\n"
+        f"Здесь можно найти свободный ник в Telegram.\n"
+        f"Каждый ник проверяется — точно свободен и не продаётся.\n\n"
+        f"🎫 Попыток сегодня: <b>{att}</b>\n"
+        f"📌 Статус: {prem}"
     )
 
 
 def digits_menu_text(length: int, user_id: int) -> str:
     att = attempts_str(user_id)
     return (
-        f"💎 *Вы в разделе поиска {length} букв*\n\n"
-        "Выберите ниже, найти юз с цифрами или без?\n\n"
-        f"🎫 Осталось попыток: *{att}*"
+        f"� Ищем ник из <b>{length} букв</b>\n\n"
+        f"Выбери — с цифрами или только буквы?\n\n"
+        f"🎫 Попыток: <b>{att}</b>"
     )
 
 
@@ -861,13 +867,13 @@ def result_text(username: str, length: int, user_id: int) -> str:
     ev = score_username(username)
     att = attempts_str(user_id)
     return (
-        f"✅ <b>НИК НАЙДЕН!</b>\n\n"
-        f"[ @{username}\n"
-        f"  └ {length} букв\n\n"
-        f"├ Ликвидность — {ev['score']}/10\n"
+        f"✅ <b>Нашёл свободный ник!</b>\n\n"
+        f"👤 @{username}\n"
+        f"└ {length} букв\n\n"
+        f"├ Ценность — {ev['score']}/10\n"
         f"├ Оценка — {ev['grade']}\n"
-        f"└ ⚡ Свободен\n\n"
-        f"🎫 Осталось попыток: <b>{att}</b>"
+        f"└ Свободен ⚡\n\n"
+        f"🎫 Попыток осталось: <b>{att}</b>"
     )
 
 
@@ -899,14 +905,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         known_users[user_id]["display"] = display
 
     print(f"[/start] ID: {user_id} | {uname} | {display}")
+    # Пишем в файл для истории
+    with open("users_log.txt", "a", encoding="utf-8") as f:
+        f.write(f"[{datetime.now().strftime('%d.%m.%Y %H:%M:%S')}] ID: {user_id} | {uname} | {display}\n")
 
-    # Реферальный параметр
+    # Реферальный параметр — поддерживаем оба формата: ref123 и AYFWDXP2
     if context.args and is_new:
         arg = context.args[0]
+        ref_inviter = None
         if arg.startswith("ref") and arg[3:].isdigit():
+            # Старый формат ref{user_id}
             ref_inviter = int(arg[3:])
-            if ref_inviter != user_id and user_id not in referred_by:
-                context.user_data["pending_ref"] = ref_inviter
+        else:
+            # Новый формат — короткий код, ищем по всем пользователям
+            for uid in known_users:
+                if _make_ref_code(uid) == arg.upper():
+                    ref_inviter = uid
+                    break
+        if ref_inviter and ref_inviter != user_id and user_id not in referred_by:
+            context.user_data["pending_ref"] = ref_inviter
 
     # Проверка подписки
     if required_channels:
@@ -927,7 +944,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         main_text(user_id),
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=reply_keyboard(),
     )
 
@@ -965,7 +982,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await query.edit_message_text(
                 main_text(user_id),
-                parse_mode="Markdown",
+                parse_mode="HTML",
                 reply_markup=main_keyboard(),
             )
         except Exception:
@@ -997,7 +1014,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "back":
         await query.edit_message_text(
             main_text(user_id),
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=main_keyboard(),
         )
         return
@@ -1009,12 +1026,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         l2 = sf["letter2"] or "—"
         filter_info = f"\n🔤 Фильтр: <b>{l1}{l2}</b>" if sf["letter1"] or sf["letter2"] else ""
         await query.edit_message_text(
-            f"🔎 <b>Поиск юзернейма</b>\n\n"
-            f"Каждый найденный ник проходит двойную проверку:\n"
-            f"• Telegram — не занят\n"
-            f"• Fragment — не на продаже\n\n"
-            f"🎫 Осталось попыток: <b>{attempts_str(user_id)}</b>"
-            + filter_info,
+            f"🔎 <b>Поиск ника</b>\n\n"
+            f"Каждый найденный ник проверяется — не занят и не продаётся.\n\n"
+            f"🎫 Попыток: <b>{attempts_str(user_id)}</b>" + filter_info,
             parse_mode="HTML",
             reply_markup=search_keyboard(),
         )
@@ -1108,24 +1122,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- Профиль ---
     if data == "profile":
         ref_count = get_ref_count(user_id)
-        prem_status = "💎 Premium" if is_premium(user_id) else "👤 Обычный"
-        prem_exp = premium_expires_str(user_id) if is_premium(user_id) else "—"
         udata = known_users.get(user_id, {})
         first_seen = udata.get("first_seen", "—")
         next_r = get_next_reward(ref_count)
         reward_line = (
-            f"🎁 До след. награды: ещё <b>{next_r[0] - ref_count}</b> реф."
+            f"🎁 Ещё <b>{next_r[0] - ref_count}</b> друзей до следующей награды"
             if next_r else "🏆 Все награды получены!"
         )
         await query.edit_message_text(
-            f"👤 <b>Профиль</b>\n"
-            f"─────────────────────\n\n"
+            f"👤 <b>Твой профиль</b>\n\n"
             f"🆔 ID: <code>{user_id}</code>\n"
-            f"📅 В боте с: {first_seen}\n\n"
+            f"📅 Тут с: {first_seen}\n\n"
             f"{'💎 Статус: Premium' if is_premium(user_id) else '👤 Статус: Обычный'}\n"
-            + (f"⏳ До конца: {prem_exp}\n" if is_premium(user_id) else "")
+            + (f"⏳ Действует до: {premium_expires_str(user_id)}\n" if is_premium(user_id) else "")
             + f"\n🎫 Попыток сегодня: <b>{attempts_str(user_id)}</b>\n"
-            f"👥 Рефералов: <b>{ref_count}</b>\n"
+            f"👥 Приглашено: <b>{ref_count}</b> чел.\n"
             f"{reward_line}",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
@@ -1142,32 +1153,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ref_count = get_ref_count(user_id)
         notif_on = ref_notifications.get(user_id, True)
 
-        # Строка прогресса наград
         reward_lines = []
         for needed, days in REFERRAL_REWARDS:
-            done = "[+]" if ref_count >= needed else "[ ]"
-            reward_lines.append(f"{done} {needed} реф. -> {days} дн.")
+            done = "✔️" if ref_count >= needed else "▫️"
+            reward_lines.append(f"{done} {needed} друзей → {days} дн. Premium")
 
         next_r = get_next_reward(ref_count)
         can_claim = get_current_reward(ref_count) is not None
 
         text = (
-            f"👥 <b>Реферальная программа</b>\n"
-            f"─────────────────────\n\n"
-            f"🔗 Ваша ссылка:\n<code>{ref_link}</code>\n\n"
-            f"👤 Приглашено: <b>{ref_count}</b> чел.\n\n"
-            f"🎁 <b>Награды:</b>\n"
+            f"👥 <b>Рефералы</b>\n\n"
+            f"Приглашай друзей — получай Premium бесплатно!\n\n"
+            f"🔗 Твоя ссылка:\n<code>{ref_link}</code>\n\n"
+            f"👤 Пригласил: <b>{ref_count}</b> чел.\n\n"
+            f"<b>Награды:</b>\n"
             + "\n".join(reward_lines)
             + f"\n\n"
-            + (f"➡️ Ещё <b>{next_r[0] - ref_count}</b> чел. до следующей награды" if next_r else "🏆 Все награды получены!")
-            + f"\n\n🔔 Уведомления о рефералах: {'✅ вкл' if notif_on else '❌ выкл'}"
+            + (f"➡️ Ещё <b>{next_r[0] - ref_count}</b> чел. до следующей награды!" if next_r else "🏆 Ты получил все награды!")
+            + f"\n\n🔔 Уведомления: {'вкл ✔️' if notif_on else 'выкл ✖️'}"
         )
 
         buttons = []
         if can_claim:
-            buttons.append([InlineKeyboardButton("🎁 Получить Premium", callback_data="ref_claim")])
+            buttons.append([InlineKeyboardButton("🎁 Забрать Premium", callback_data="ref_claim")])
         buttons.append([InlineKeyboardButton(
-            "🔔 Выкл. уведомления" if notif_on else "🔔 Вкл. уведомления",
+            "🔔 Выключить уведомления" if notif_on else "🔔 Включить уведомления",
             callback_data="ref_notif_toggle"
         )])
         buttons.append([InlineKeyboardButton("◀️ Назад", callback_data="back")])
@@ -1223,14 +1233,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ref_count = get_ref_count(user_id)
         reward = get_current_reward(ref_count)
         if not reward:
-            await query.answer("⚠️ Недостаточно рефералов", show_alert=True)
+            await query.answer("Не хватает рефералов", show_alert=True)
             return
         needed, days = reward
-        # Выдаём Premium
         grant_premium(user_id, days)
         await query.edit_message_text(
             f"🎉 <b>Premium получен!</b>\n\n"
-            f"За <b>{needed}</b> рефералов вам выдан Premium на <b>{days}</b> дней.\n"
+            f"За {needed} приглашённых друзей тебе выдан Premium на {days} дней.\n"
             f"Действует до: <b>{premium_expires_str(user_id)}</b>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back")]]),
@@ -1261,7 +1270,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.edit_message_text(
             digits_menu_text(length, user_id),
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=digits_keyboard(length),
         )
         return
@@ -1282,27 +1291,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "trap_menu":
         prem = is_premium(user_id)
         text = (
-            "🪤 *Ловушка на ник* — функция Premium\n\n"
-            "Укажите юзернейм, и как только он освободится — вы "
-            "мгновенно получите уведомление.\n\n"
-            + ("✅ У вас есть Premium-подписка" if prem else "💎 Требуется Premium-подписка")
+            "🪤 <b>Ловушка на ник</b>\n\n"
+            "Укажи ник — и как только он освободится, сразу придёт уведомление.\n\n"
+            + ("✔️ У тебя есть Premium" if prem else "⚠️ Нужен Premium")
         )
         await query.edit_message_text(
             text,
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=trap_keyboard(prem),
         )
         return
 
     if data == "trap_set":
         if not is_premium(user_id):
-            await query.answer("Требуется Premium!", show_alert=True)
+            await query.answer("Нужен Premium!", show_alert=True)
             return
         context.user_data["awaiting_trap"] = True
         await query.edit_message_text(
-            "🪤 *Ловушка на ник*\n\n"
-            "Введите юзернейм (без @), за которым хотите следить:",
-            parse_mode="Markdown",
+            "🪤 <b>Ловушка на ник</b>\n\nНапиши ник (без @) — буду следить за ним:",
+            parse_mode="HTML",
         )
         return
 
@@ -1726,7 +1733,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Обычное сообщение — показываем главное меню
     await update.message.reply_text(
         main_text(user_id),
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=reply_keyboard(),
     )
 
