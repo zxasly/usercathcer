@@ -372,11 +372,11 @@ def generate_username(length: int, with_digits: bool, letter1: str = None, lette
 
 # Замены букв на цифры (leet speak)
 LEET_MAP = {
-    'a': ['4', '@'],
+    'a': ['4'],
     'e': ['3'],
-    'i': ['1', '!'],
+    'i': ['1'],
     'o': ['0'],
-    's': ['5', '$'],
+    's': ['5'],
     't': ['7'],
     'l': ['1'],
     'b': ['8'],
@@ -448,13 +448,12 @@ def mutate_word_leet(word: str, length: int) -> list[str]:
     return list(candidates)
 
 
-async def find_free_username_dict(bot: Bot, length: int) -> str | None:
+async def find_free_username_dict(bot: Bot, length: int, user_id: int = 0) -> str | None:
     """Ищет свободный ник используя слова из words.txt (макс 7 букв)."""
     words = load_words()
     if not words:
         return None
 
-    # Только слова до 7 букв, подходящей длины ±2
     suitable = [w for w in words if abs(len(w) - length) <= 2 and len(w) <= 7]
     if not suitable:
         suitable = [w for w in words if len(w) <= 7]
@@ -472,7 +471,9 @@ async def find_free_username_dict(bot: Bot, length: int) -> str | None:
                 continue
             result = await is_username_free(bot, candidate)
             if result is True:
-                logger.info(f"[Словарь] НАЙДЕН: @{candidate} (из '{word}')")
+                udata = known_users.get(user_id, {})
+                uname = udata.get("username", str(user_id))
+                logger.info(f"[Словарь] НАЙДЕН: @{candidate} (из '{word}') | {uname}")
                 return candidate
             await asyncio.sleep(0.05)
 
@@ -731,6 +732,36 @@ _last_getchat: float = 0.0
 GETCHAT_INTERVAL = 1.2
 
 
+async def check_fragment_httpx(username: str) -> bool:
+    """
+    Проверяет Fragment через httpx.
+    True = не на Fragment, False = на продаже.
+    """
+    import httpx
+    u = username.lower()
+    if u in _fragment_cache:
+        return _fragment_cache[u]
+    try:
+        async with httpx.AsyncClient(timeout=3.0, follow_redirects=True) as client:
+            r = await client.get(
+                f"https://fragment.com/username/{u}",
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            if r.status_code == 200:
+                low = r.text.lower()
+                on_market = any(x in low for x in (
+                    "buy now", "place a bid", "auction", "collectible",
+                    "on sale", "for sale", "sold",
+                ))
+                _fragment_cache[u] = not on_market
+                return not on_market
+        _fragment_cache[u] = True
+        return True
+    except Exception as e:
+        logger.debug(f"Fragment check error @{u}: {e}")
+        return True  # не смогли проверить — не блокируем
+
+
 async def is_username_free(bot: Bot, username: str) -> bool | None:
     """
     Проверяет ник:
@@ -763,6 +794,11 @@ async def is_username_free(bot: Bot, username: str) -> bool | None:
             except Exception as inner_e:
                 inner_msg = str(inner_e).lower()
                 if "usernamenotoccupied" in inner_msg or "username not occupied" in inner_msg or "invalid" in inner_msg:
+                    # Telethon говорит свободен — проверяем Fragment
+                    frag_ok = await check_fragment_httpx(u)
+                    if not frag_ok:
+                        _username_cache[u] = False
+                        return False
                     _username_cache[u] = True
                     return True
                 if "flood" in inner_msg:
@@ -798,6 +834,11 @@ async def is_username_free(bot: Bot, username: str) -> bool | None:
                 "user not found", "peer_id_invalid", "username_not_occupied",
                 "username_invalid",
             )):
+                # getChat говорит свободен — проверяем Fragment
+                frag_ok = await check_fragment_httpx(u)
+                if not frag_ok:
+                    _username_cache[u] = False
+                    return False
                 _username_cache[u] = True
                 return True
             if "flood" in msg or "too many" in msg or "retry" in msg:
@@ -1179,7 +1220,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot: Bot = context.bot
         # Выбираем длину — 5 если Premium, иначе 6
         length = 5 if is_premium(user_id) else 6
-        username = await find_free_username_dict(bot, length)
+        username = await find_free_username_dict(bot, length, user_id)
 
         if username:
             await query.edit_message_text(
@@ -1615,13 +1656,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- Повтор поиска ---
     if data.startswith("repeat_"):
-        # repeat_{length}_{digits|nodigits}  or  repeat_dict
         repeat_data = data[len("repeat_"):]
         if repeat_data == "dict":
-            data = "dict_search"
+            # Повтор словарного поиска
+            if not is_premium(user_id):
+                await query.answer("Нужен Premium!", show_alert=True)
+                return
+            await query.edit_message_text("📖 <b>Ищу по словарю...</b>", parse_mode="HTML")
+            bot: Bot = context.bot
+            username = await find_free_username_dict(bot, 5, user_id)
+            if username:
+                await query.edit_message_text(
+                    result_text(username, 5, user_id),
+                    parse_mode="HTML",
+                    reply_markup=result_keyboard("dict"),
+                )
+            else:
+                await query.edit_message_text(
+                    "😔 Не нашёл по словарю. Попробуй ещё!",
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 Ещё раз", callback_data="repeat_dict")],
+                        [InlineKeyboardButton("◀️ Назад", callback_data="search_menu")],
+                    ]),
+                )
+            return
         else:
             data = f"search_{repeat_data}"
-        # падаем дальше на обработчики search_ / dict_search
+            # падаем дальше на обработчик search_
 
     # --- Поиск ---
     if data.startswith("search_"):
@@ -2056,16 +2118,19 @@ async def admin_button_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     # --- Список Premium ---
     if data == "adm_list_prem":
         if not premium_users:
-            text = "👑 *Premium пользователи*\n\nСписок пуст."
+            text = "👑 <b>Premium пользователи</b>\n\nСписок пуст."
         else:
             lines = []
             for uid, exp in premium_users.items():
                 exp_str = "навсегда" if exp is None else exp.strftime("%d.%m.%Y")
-                lines.append(f"• `{uid}` — до {exp_str}")
-            text = "👑 *Premium пользователи:*\n\n" + "\n".join(lines)
+                udata = known_users.get(uid, {})
+                uname = udata.get("username", "нет")
+                display = udata.get("display", "—")
+                lines.append(f"• <code>{uid}</code> | {display} ({uname}) — до {exp_str}")
+            text = "👑 <b>Premium пользователи:</b>\n\n" + "\n".join(lines)
         await query.edit_message_text(
             text,
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="adm_back")]]),
         )
         return
