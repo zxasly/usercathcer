@@ -962,7 +962,39 @@ async def is_username_free(bot: Bot, username: str) -> bool | None:
                 flood_wait = int(m.group(1)) if m else 30
                 flood_wait = min(flood_wait, 60)
                 GETCHAT_INTERVAL = min(GETCHAT_INTERVAL + 0.5, 5.0)
-                logger.warning(f"FloodWait {flood_wait}с, интервал: {GETCHAT_INTERVAL:.1f}с")
+                logger.warning(f"getChat FloodWait {flood_wait}с — пробую Telethon #2")
+                # Пробуем Telethon #2
+                tele2 = await get_telethon_2()
+                if tele2 and _telethon_loop_2 and not _telethon_loop_2.is_closed():
+                    try:
+                        from telethon.tl.functions.contacts import ResolveUsernameRequest
+                        async def _resolve_fb():
+                            return await tele2(ResolveUsernameRequest(u))
+                        future_fb = asyncio.run_coroutine_threadsafe(_resolve_fb(), _telethon_loop_2)
+                        try:
+                            result_fb = future_fb.result(timeout=8)
+                            chats_fb = getattr(result_fb, 'chats', [])
+                            users_fb = getattr(result_fb, 'users', [])
+                            if not chats_fb and not users_fb:
+                                frag_ok = await check_fragment_httpx(u)
+                                _username_cache[u] = frag_ok
+                                return True if frag_ok else False
+                            entity_fb = (chats_fb + users_fb)[0]
+                            uname_fb = getattr(entity_fb, 'username', None)
+                            if uname_fb and uname_fb.lower() == u:
+                                _username_cache[u] = False
+                                return False
+                            frag_ok = await check_fragment_httpx(u)
+                            _username_cache[u] = frag_ok
+                            return True if frag_ok else False
+                        except Exception as efb:
+                            efb_msg = str(efb).lower()
+                            if "usernamenotoccupied" in efb_msg or "invalid" in efb_msg:
+                                frag_ok = await check_fragment_httpx(u)
+                                _username_cache[u] = frag_ok
+                                return True if frag_ok else False
+                    except Exception:
+                        pass
                 await asyncio.sleep(flood_wait)
                 return None
             logger.debug(f"getChat error @{u}: {e}")
@@ -1327,7 +1359,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "📖 <b>Ищу по словарю...</b>\n\n"
             "Перебираю слова и ищу похожие свободные ники.\n"
-            "Если точное слово занято — заменяю буквы (e→3, i→1 и т.д.)\n\n"
             "<i>Обычно занимает 10–30 секунд</i>",
             parse_mode="HTML",
         )
