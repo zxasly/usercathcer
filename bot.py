@@ -1200,7 +1200,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # --- Фильтр букв ---
-    if data == "filter_menu":        sf = search_filters[user_id]
+    if data == "filter_menu":
+        sf = search_filters[user_id]
         l1 = sf["letter1"] or "не выбрана"
         l2 = sf["letter2"] or "не выбрана"
         await query.edit_message_text(
